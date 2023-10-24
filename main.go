@@ -16,7 +16,7 @@ import (
 
 type CLI struct {
 	GithubToken         string `required:"" env:"GITHUB_TOKEN"`
-	Repository          string `default:"calmh/todo" env:"GITHUB_REPOSITORY"`
+	Repository          string `required:"" env:"GITHUB_REPOSITORY"`
 	RecurringIssueLabel string `default:"recurring" env:"RECURRING_ISSUE_LABEL"`
 }
 
@@ -38,7 +38,8 @@ func main() {
 		Labels: []string{cli.RecurringIssueLabel},
 	})
 	if err != nil {
-		panic(err)
+		slog.Error("Listing issues", "error", err)
+		os.Exit(1)
 	}
 
 	for _, issue := range issues {
@@ -50,7 +51,7 @@ func main() {
 			if strings.HasPrefix(line, "RRULE:") {
 				rr, err := rrule.StrToRRule(line[6:])
 				if err != nil {
-					log.Error("Invalid RRULE", "error", err)
+					log.Error("Invalid RRULE, skipping", "error", err)
 					continue
 				}
 				rr.DTStart(issue.GetCreatedAt().Time)
@@ -58,7 +59,7 @@ func main() {
 				when := rr.Before(time.Now(), true)
 				if time.Since(when) <= 24*time.Hour {
 					if err := clone(client, owner, repo, issue); err != nil {
-						log.Error("Cloning issue", "error", err)
+						log.Error("Failed to clone issue", "error", err)
 					} else {
 						log.Info("Cloned issue")
 					}

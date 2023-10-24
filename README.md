@@ -34,4 +34,5 @@ jobs:
       - uses: docker://ghcr.io/calmh/github-todo-recurrence:latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}%
+          # RECURRING_ISSUE_LABEL: recurring
 ```
