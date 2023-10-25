@@ -1,8 +1,11 @@
 # github-todo-recurrence
 
-This implements recurring todos (issues) in the GitHub issue tracker. Issues
-with the `recurring` label that contain an `RRULE:` line are processed and
-cloned according the recurrence rule in question.
+This implements recurring todos (issues) in the GitHub issue tracker. Open
+issues that contain an `RRULE:` line are processed and cloned according the
+recurrence rule in question.
+
+Issues with a `Due: 2006-01-01` type line will get notifications one week
+before, two days before, one day before, and on the day of the due date.
 
 When cloning an issue the program stops at the first `---` in the body.
 Putting the `RRULE` and `Labels` after such a horisontal line makes them not
@@ -34,5 +37,4 @@ jobs:
       - uses: docker://ghcr.io/calmh/github-todo-recurrence:latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}%
-          # RECURRING_ISSUE_LABEL: recurring
 ```

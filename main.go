@@ -15,9 +15,8 @@ import (
 )
 
 type CLI struct {
-	GithubToken         string `required:"" env:"GITHUB_TOKEN"`
-	Repository          string `required:"" env:"GITHUB_REPOSITORY"`
-	RecurringIssueLabel string `default:"recurring" env:"RECURRING_ISSUE_LABEL"`
+	GithubToken string `required:"" env:"GITHUB_TOKEN"`
+	Repository  string `required:"" env:"GITHUB_REPOSITORY"`
 }
 
 func main() {
@@ -34,8 +33,7 @@ func main() {
 	client := github.NewClient(tc)
 
 	issues, _, err := client.Issues.ListByRepo(context.Background(), owner, repo, &github.IssueListByRepoOptions{
-		State:  "open",
-		Labels: []string{cli.RecurringIssueLabel},
+		State: "open",
 	})
 	if err != nil {
 		slog.Error("Listing issues", "error", err)
@@ -49,24 +47,58 @@ func main() {
 		lines := strings.Split(issue.GetBody(), "\n")
 		for _, line := range lines {
 			if strings.HasPrefix(line, "RRULE:") {
-				rr, err := rrule.StrToRRule(line[6:])
-				if err != nil {
-					log.Error("Invalid RRULE, skipping", "error", err)
-					continue
+				if err := processRecurring(log, line[6:], client, owner, repo, issue); err != nil {
+					log.Error("Processing recurring issue", "error", err)
 				}
-				rr.DTStart(issue.GetCreatedAt().Time)
-
-				when := rr.Before(time.Now(), true)
-				if time.Since(when) <= 24*time.Hour {
-					if err := clone(client, owner, repo, issue); err != nil {
-						log.Error("Failed to clone issue", "error", err)
-					} else {
-						log.Info("Cloned issue")
-					}
+			} else if strings.HasPrefix(line, "Due:") {
+				if err := processDue(log, line, client, owner, repo, issue); err != nil {
+					log.Error("Processing due issue", "error", err)
 				}
 			}
 		}
 	}
+}
+
+func processDue(log *slog.Logger, line string, client *github.Client, owner string, repo string, issue *github.Issue) error {
+	_, after, _ := strings.Cut(line, ":")
+	due, err := time.Parse("2006-01-02", strings.TrimSpace(after))
+	if err != nil {
+		return fmt.Errorf("invalid date: %w", err)
+	}
+
+	log.Info("Processing due issue", "due", due)
+
+	dueIn := time.Until(due)
+	updated := time.Since(issue.GetUpdatedAt().Time)
+	switch {
+	case dueIn <= 0 && issue.GetUpdatedAt().Time.Before(due):
+		_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
+			Body: github.String("This issue is now overdue"),
+		})
+	case updated >= 30*24*time.Hour && dueIn <= 7*24*time.Hour,
+		updated >= 7*24*time.Hour && dueIn <= 48*time.Hour,
+		updated >= 24*time.Hour && dueIn <= 24*time.Hour:
+		_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
+			Body: github.String(fmt.Sprintf("This issue is due in %s", dueIn.Round(time.Hour))),
+		})
+	}
+	return err
+}
+
+func processRecurring(log *slog.Logger, rule string, client *github.Client, owner string, repo string, issue *github.Issue) error {
+	rr, err := rrule.StrToRRule(rule)
+	if err != nil {
+		return fmt.Errorf("invalid rrule: %w", err)
+	}
+	rr.DTStart(issue.GetCreatedAt().Time)
+
+	when := rr.Before(time.Now(), true)
+	if time.Since(when) <= 24*time.Hour {
+		return clone(client, owner, repo, issue)
+	} else {
+		log.Info("Next recurring occurrence", "time", rr.After(time.Now(), true))
+	}
+	return nil
 }
 
 func clone(cli *github.Client, owner, repo string, iss *github.Issue) error {
