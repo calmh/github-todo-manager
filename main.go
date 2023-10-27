@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,6 +70,27 @@ func processDue(log *slog.Logger, line string, client *github.Client, owner stri
 	log.Info("Processing due issue", "due", due)
 
 	dueIn := time.Until(due)
+
+	// Set "todo" label if it's due in a week, "due" if it's due in a day.
+	var setLabels []string
+	if dueIn <= 7*24*time.Hour && !slices.ContainsFunc(issue.Labels, func(label *github.Label) bool {
+		return label.GetName() == "todo"
+	}) {
+		setLabels = append(setLabels, "todo")
+	}
+	if dueIn <= 24*time.Hour && !slices.ContainsFunc(issue.Labels, func(label *github.Label) bool {
+		return label.GetName() == "due"
+	}) {
+		setLabels = append(setLabels, "due")
+	}
+	if len(setLabels) > 0 {
+		_, _, err = client.Issues.AddLabelsToIssue(context.Background(), owner, repo, issue.GetNumber(), setLabels)
+		if err != nil {
+			return fmt.Errorf("adding labels: %w", err)
+		}
+	}
+
+	// Comment on issues that are about to become due.
 	updated := time.Since(issue.GetUpdatedAt().Time)
 	switch {
 	case dueIn <= 0 && issue.GetUpdatedAt().Time.Before(due):
