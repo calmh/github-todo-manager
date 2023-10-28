@@ -69,16 +69,16 @@ func processDue(log *slog.Logger, line string, client *github.Client, owner stri
 
 	log.Info("Processing due issue", "due", due)
 
-	dueIn := time.Until(due)
+	dueInDays := int(time.Until(due).Hours()/24) + 1
 
 	// Set "todo" label if it's due in a week, "due" if it's due in a day.
 	var setLabels []string
-	if dueIn <= 7*24*time.Hour && !slices.ContainsFunc(issue.Labels, func(label *github.Label) bool {
+	if dueInDays <= 7 && !slices.ContainsFunc(issue.Labels, func(label *github.Label) bool {
 		return label.GetName() == "todo"
 	}) {
 		setLabels = append(setLabels, "todo")
 	}
-	if dueIn <= 24*time.Hour && !slices.ContainsFunc(issue.Labels, func(label *github.Label) bool {
+	if dueInDays <= 1 && !slices.ContainsFunc(issue.Labels, func(label *github.Label) bool {
 		return label.GetName() == "due"
 	}) {
 		setLabels = append(setLabels, "due")
@@ -93,15 +93,17 @@ func processDue(log *slog.Logger, line string, client *github.Client, owner stri
 	// Comment on issues that are about to become due.
 	updated := time.Since(issue.GetUpdatedAt().Time)
 	switch {
-	case dueIn <= 0 && issue.GetUpdatedAt().Time.Before(due):
+	case dueInDays <= 0:
+		if issue.GetUpdatedAt().Time.Before(due) {
+			_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
+				Body: github.String("This issue is now overdue"),
+			})
+		}
+	case updated >= 30*24*time.Hour && dueInDays <= 7,
+		updated >= 7*24*time.Hour && dueInDays <= 2,
+		updated >= 24*time.Hour && dueInDays <= 1:
 		_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
-			Body: github.String("This issue is now overdue"),
-		})
-	case updated >= 30*24*time.Hour && dueIn <= 7*24*time.Hour,
-		updated >= 7*24*time.Hour && dueIn <= 48*time.Hour,
-		updated >= 24*time.Hour && dueIn <= 24*time.Hour:
-		_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
-			Body: github.String(fmt.Sprintf("This issue is due in %s", dueIn.Round(time.Hour))),
+			Body: github.String(fmt.Sprintf("This issue is due in %d days", dueInDays)),
 		})
 	}
 	return err
