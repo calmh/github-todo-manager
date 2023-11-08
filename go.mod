@@ -7,6 +7,7 @@ require (
 	github.com/google/go-github/v56 v56.0.0
 	github.com/teambition/rrule-go v1.8.2
 	golang.org/x/oauth2 v0.13.0
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -41,28 +44,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	exit := 0
 	for _, issue := range issues {
 		log := slog.With("number", issue.GetNumber(), "title", issue.GetTitle())
 		log.Info("Considering issue")
 
-		lines := strings.Split(issue.GetBody(), "\n")
-		for _, line := range lines {
-			if strings.HasPrefix(line, "RRULE:") {
-				if err := processRecurring(log, line[6:], client, owner, repo, issue); err != nil {
-					log.Error("Processing recurring issue", "error", err)
-				}
-			} else if strings.HasPrefix(line, "Due:") {
-				if err := processDue(log, line, client, owner, repo, issue); err != nil {
-					log.Error("Processing due issue", "error", err)
-				}
+		vars, _ := variablesFromBody(issue.GetBody())
+		if v, ok := vars["rrule"]; ok {
+			if err := processRecurring(log, v, client, owner, repo, issue); err != nil {
+				log.Error("Processing recurring issue", "error", err)
+				exit = 1
+			}
+		}
+		if v, ok := vars["due"]; ok {
+			if err := processDue(log, v, client, owner, repo, issue); err != nil {
+				log.Error("Processing due issue", "error", err)
+				exit = 1
 			}
 		}
 	}
+	os.Exit(exit)
 }
 
-func processDue(log *slog.Logger, line string, client *github.Client, owner string, repo string, issue *github.Issue) error {
-	_, after, _ := strings.Cut(line, ":")
-	due, err := time.Parse("2006-01-02", strings.TrimSpace(after))
+func processDue(log *slog.Logger, when string, client *github.Client, owner string, repo string, issue *github.Issue) error {
+	due, err := time.Parse("2006-01-02", when)
 	if err != nil {
 		return fmt.Errorf("invalid date: %w", err)
 	}
@@ -118,6 +123,7 @@ func processRecurring(log *slog.Logger, rule string, client *github.Client, owne
 
 	when := rr.Before(time.Now(), true)
 	if time.Since(when) <= 24*time.Hour {
+		log.Info("Cloning recurring issue", "when", when)
 		return clone(client, owner, repo, issue)
 	} else {
 		log.Info("Next recurring occurrence", "time", rr.After(time.Now(), true))
@@ -126,29 +132,63 @@ func processRecurring(log *slog.Logger, rule string, client *github.Client, owne
 }
 
 func clone(cli *github.Client, owner, repo string, iss *github.Issue) error {
-	bodyLines := strings.Split(iss.GetBody(), "\n")
-	var newBodyLines []string
-	beforeHR := true
+	vars, body := variablesFromBody(iss.GetBody())
+	title := iss.GetTitle()
+
 	var labels []string
-	for _, line := range bodyLines {
-		if strings.HasPrefix(line, "---") {
-			beforeHR = false
-		}
-		if beforeHR {
-			newBodyLines = append(newBodyLines, line)
-		}
-		if strings.HasPrefix(line, "Labels:") {
-			_, after, _ := strings.Cut(line, ":")
-			labels = strings.Split(after, ",")
+	if v, ok := vars["labels"]; ok {
+		labels = strings.Split(v, ",")
+		for i, label := range labels {
+			labels[i] = strings.TrimSpace(label)
 		}
 	}
-	newBodyLines = append(newBodyLines, "---")
-	newBodyLines = append(newBodyLines, fmt.Sprintf("Cloned from #%d", iss.GetNumber()))
+
+	// Try to parse & execute the title and body as a templates
+	body = execTemplate(body)
+	title = execTemplate(title)
 
 	_, _, err := cli.Issues.Create(context.Background(), owner, repo, &github.IssueRequest{
-		Title:  github.String(iss.GetTitle()),
-		Body:   github.String(strings.Join(newBodyLines, "\n")),
+		Title:  github.String(title),
+		Body:   github.String(body),
 		Labels: &labels,
 	})
 	return err
+}
+
+func execTemplate(s string) string {
+	fm := template.FuncMap{
+		"now": time.Now,
+	}
+	tpl, err := template.New("body").Funcs(fm).Parse(s)
+	if err != nil {
+		return s
+	}
+	buf := new(bytes.Buffer)
+	if err := tpl.Execute(buf, nil); err != nil {
+		return s
+	}
+	return buf.String()
+}
+
+var variablesSep = regexp.MustCompile(`(?m)^-?--$`)
+
+func variablesFromBody(body string) (map[string]string, string) {
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	matches := variablesSep.FindAllStringIndex(body, -1)
+	if len(matches) == 0 {
+		return nil, body
+	}
+
+	markerIdxStart := matches[len(matches)-1][0]
+	markerIdxEnd := matches[len(matches)-1][1]
+
+	vars := make(map[string]string)
+	for _, line := range strings.Split(body[markerIdxEnd+1:], "\n") {
+		before, after, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		vars[strings.ToLower(strings.TrimSpace(before))] = strings.TrimSpace(after)
+	}
+	return vars, strings.TrimSpace(body[:markerIdxStart]) + "\n"
 }
