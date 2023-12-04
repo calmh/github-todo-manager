@@ -68,14 +68,15 @@ func main() {
 }
 
 func processDue(log *slog.Logger, when string, client *github.Client, owner string, repo string, issue *github.Issue, dryRun bool) error {
-	due, err := time.Parse("2006-01-02", when)
+	due, err := time.ParseInLocation("2006-01-02", when, time.UTC)
 	if err != nil {
 		return fmt.Errorf("invalid date: %w", err)
 	}
 
 	log.Info("Processing due issue", "due", due)
 
-	dueInDays := int(time.Until(due).Hours()/24) + 1
+	// "Today" is zero
+	dueInDays := int(time.Until(due).Hours() / 24)
 
 	// Set "todo" label if it's due in a week, "due" if it's due in a day.
 	var setLabels []string
@@ -102,16 +103,25 @@ func processDue(log *slog.Logger, when string, client *github.Client, owner stri
 	// Comment on issues that are about to become due.
 	updated := time.Since(issue.GetUpdatedAt().Time)
 	switch {
-	case dueInDays <= 0:
+	case dueInDays < 0: // Complain every day for overdue issues
 		if issue.GetUpdatedAt().Time.Before(due) {
 			log.Info("Issue is overdue")
 			if !dryRun {
 				_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
-					Body: github.String("This issue is now overdue"),
+					Body: github.String(fmt.Sprintf("This issue is overdue (due %d days ago)", -dueInDays)),
 				})
 			}
 		}
-	case updated >= 30*24*time.Hour && dueInDays <= 7,
+	case dueInDays == 1: // Notify on the day it's due
+		if issue.GetUpdatedAt().Time.Before(due) {
+			log.Info("Issue is due today")
+			if !dryRun {
+				_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
+					Body: github.String("This issue is due today"),
+				})
+			}
+		}
+	case updated >= 30*24*time.Hour && dueInDays <= 7, // Notify upcoming issues, unless they are recently touched
 		updated >= 7*24*time.Hour && dueInDays <= 2,
 		updated >= 24*time.Hour && dueInDays <= 1:
 		log.Info("Issue is due soon", "dueInDays", dueInDays)
