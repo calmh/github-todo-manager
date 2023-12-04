@@ -22,6 +22,6 @@ jobs:
         with:
           context: .
           tags: |
-            ghcr.io/calmh/github-todo-recurrence:latest
+            ghcr.io/calmh/github-todo-manager:latest
           # build on feature branches, push only on main branch
           push: ${{ github.ref == 'refs/heads/main' }}

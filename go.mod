@@ -1,4 +1,4 @@
-module calmh.dev/github-todo-recurrence
+module calmh.dev/github-todo-manager
 
 go 1.21.3
 
