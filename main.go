@@ -21,6 +21,7 @@ import (
 type CLI struct {
 	GithubToken string `required:"" env:"GITHUB_TOKEN"`
 	Repository  string `required:"" env:"GITHUB_REPOSITORY"`
+	DryRun      bool   `short:"n" help:"Don't actually do anything, just print what would be done"`
 }
 
 func main() {
@@ -51,13 +52,13 @@ func main() {
 
 		vars, _ := variablesFromBody(issue.GetBody())
 		if v, ok := vars["rrule"]; ok {
-			if err := processRecurring(log, v, client, owner, repo, issue); err != nil {
+			if err := processRecurring(log, v, client, owner, repo, issue, cli.DryRun); err != nil {
 				log.Error("Processing recurring issue", "error", err)
 				exit = 1
 			}
 		}
 		if v, ok := vars["due"]; ok {
-			if err := processDue(log, v, client, owner, repo, issue); err != nil {
+			if err := processDue(log, v, client, owner, repo, issue, cli.DryRun); err != nil {
 				log.Error("Processing due issue", "error", err)
 				exit = 1
 			}
@@ -66,7 +67,7 @@ func main() {
 	os.Exit(exit)
 }
 
-func processDue(log *slog.Logger, when string, client *github.Client, owner string, repo string, issue *github.Issue) error {
+func processDue(log *slog.Logger, when string, client *github.Client, owner string, repo string, issue *github.Issue, dryRun bool) error {
 	due, err := time.Parse("2006-01-02", when)
 	if err != nil {
 		return fmt.Errorf("invalid date: %w", err)
@@ -89,9 +90,12 @@ func processDue(log *slog.Logger, when string, client *github.Client, owner stri
 		setLabels = append(setLabels, "due")
 	}
 	if len(setLabels) > 0 {
-		_, _, err = client.Issues.AddLabelsToIssue(context.Background(), owner, repo, issue.GetNumber(), setLabels)
-		if err != nil {
-			return fmt.Errorf("adding labels: %w", err)
+		log.Info("Setting labels", "labels", setLabels)
+		if !dryRun {
+			_, _, err = client.Issues.AddLabelsToIssue(context.Background(), owner, repo, issue.GetNumber(), setLabels)
+			if err != nil {
+				return fmt.Errorf("adding labels: %w", err)
+			}
 		}
 	}
 
@@ -100,21 +104,27 @@ func processDue(log *slog.Logger, when string, client *github.Client, owner stri
 	switch {
 	case dueInDays <= 0:
 		if issue.GetUpdatedAt().Time.Before(due) {
-			_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
-				Body: github.String("This issue is now overdue"),
-			})
+			log.Info("Issue is overdue")
+			if !dryRun {
+				_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
+					Body: github.String("This issue is now overdue"),
+				})
+			}
 		}
 	case updated >= 30*24*time.Hour && dueInDays <= 7,
 		updated >= 7*24*time.Hour && dueInDays <= 2,
 		updated >= 24*time.Hour && dueInDays <= 1:
-		_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
-			Body: github.String(fmt.Sprintf("This issue is due in %d days", dueInDays)),
-		})
+		log.Info("Issue is due soon", "dueInDays", dueInDays)
+		if !dryRun {
+			_, _, err = client.Issues.CreateComment(context.Background(), owner, repo, issue.GetNumber(), &github.IssueComment{
+				Body: github.String(fmt.Sprintf("This issue is due in %d days", dueInDays)),
+			})
+		}
 	}
 	return err
 }
 
-func processRecurring(log *slog.Logger, rule string, client *github.Client, owner string, repo string, issue *github.Issue) error {
+func processRecurring(log *slog.Logger, rule string, client *github.Client, owner string, repo string, issue *github.Issue, dryRun bool) error {
 	rr, err := rrule.StrToRRule(rule)
 	if err != nil {
 		return fmt.Errorf("invalid rrule: %w", err)
@@ -124,14 +134,14 @@ func processRecurring(log *slog.Logger, rule string, client *github.Client, owne
 	when := rr.Before(time.Now(), true)
 	if time.Since(when) <= 24*time.Hour {
 		log.Info("Cloning recurring issue", "when", when)
-		return clone(client, owner, repo, issue)
+		return clone(log, client, owner, repo, issue, dryRun)
 	} else {
 		log.Info("Next recurring occurrence", "time", rr.After(time.Now(), true))
 	}
 	return nil
 }
 
-func clone(cli *github.Client, owner, repo string, iss *github.Issue) error {
+func clone(log *slog.Logger, cli *github.Client, owner, repo string, iss *github.Issue, dryRun bool) error {
 	vars, body := variablesFromBody(iss.GetBody())
 	title := iss.GetTitle()
 
@@ -144,8 +154,21 @@ func clone(cli *github.Client, owner, repo string, iss *github.Issue) error {
 	}
 
 	// Try to parse & execute the title and body as a templates
-	body = execTemplate(body)
-	title = execTemplate(title)
+	if newBody, err := execTemplate(body); err != nil {
+		log.Error("Executing body template", "error", err)
+	} else {
+		body = newBody
+	}
+	if newTitle, err := execTemplate(title); err != nil {
+		log.Error("Executing title template", "error", err)
+	} else {
+		title = newTitle
+	}
+
+	if dryRun {
+		log.Info("Would create issue", "title", title, "body", body, "labels", labels)
+		return nil
+	}
 
 	_, _, err := cli.Issues.Create(context.Background(), owner, repo, &github.IssueRequest{
 		Title:  github.String(title),
@@ -155,19 +178,19 @@ func clone(cli *github.Client, owner, repo string, iss *github.Issue) error {
 	return err
 }
 
-func execTemplate(s string) string {
+func execTemplate(s string) (string, error) {
 	fm := template.FuncMap{
 		"now": time.Now,
 	}
-	tpl, err := template.New("body").Funcs(fm).Parse(s)
+	tpl, err := template.New("template").Funcs(fm).Parse(s)
 	if err != nil {
-		return s
+		return "", err
 	}
 	buf := new(bytes.Buffer)
 	if err := tpl.Execute(buf, nil); err != nil {
-		return s
+		return "", err
 	}
-	return buf.String()
+	return buf.String(), nil
 }
 
 var variablesSep = regexp.MustCompile(`(?m)^-?--$`)
