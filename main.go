@@ -112,7 +112,7 @@ func processDue(log *slog.Logger, when string, client *github.Client, owner stri
 				})
 			}
 		}
-	case dueInDays == 1: // Notify on the day it's due
+	case dueInDays == 0: // Notify on the day it's due
 		if issue.GetUpdatedAt().Time.Before(due) {
 			log.Info("Issue is due today")
 			if !dryRun {
