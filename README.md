@@ -33,10 +33,12 @@ Due: 2023-12-24
 
 ### Recurring
 
-Issues can be made recurring by adding a recurrence rule. A "recurring
-issue" is one that will be cloned when the recurrence rule fires. When cloning
-the issue, the variables are not copied. Here's an issue that will recur on
-the first Monday of each month, the clone getting a `todo` label:
+Issues can be made recurring by adding a [recurrence
+rule](https://icalendar.org/iCalendar-RFC-5545/3-8-5-3-recurrence-rule.html).
+A "recurring issue" is one that will be cloned when the recurrence rule
+fires. When cloning the issue, the variables are not copied. Here's an issue
+that will recur on the first Monday of each month, the clone getting a
+`todo` label:
 
 ```
 Issue body text here
