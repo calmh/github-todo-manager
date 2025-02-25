@@ -37,12 +37,21 @@ func main() {
 	tc := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: cli.GithubToken}))
 	client := github.NewClient(tc)
 
-	issues, _, err := client.Issues.ListByRepo(context.Background(), owner, repo, &github.IssueListByRepoOptions{
+	var issues []*github.Issue
+	opts := &github.IssueListByRepoOptions{
 		State: "open",
-	})
-	if err != nil {
-		slog.Error("Listing issues", "error", err)
-		os.Exit(1)
+	}
+	for {
+		is, resp, err := client.Issues.ListByRepo(context.Background(), owner, repo, opts)
+		if err != nil {
+			slog.Error("Listing issues", "error", err)
+			os.Exit(1)
+		}
+		issues = append(issues, is...)
+		if resp.NextPage <= opts.Page {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 
 	exit := 0
